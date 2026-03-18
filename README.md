@@ -1,202 +1,95 @@
-# Databricks Lambda Architecture - Batch + Real-time Streaming
+# 🚀 Lambda Architecture for Databricks
 
+A production-ready **data pipeline** combining AWS services (S3, Kinesis, Lambda) with Databricks for batch and streaming analytics.
 
+## 📊 What Is This?
 
-## 📊 Project Overview
-
-Complete **Lambda Architecture** implementation combining:
-- **Batch Layer** 📦: Process item properties from S3 via Databricks Autoloader
-- **Speed Layer** ⚡: Real-time event streaming via S3 → Lambda → Kinesis → Databricks
-
-**Data Pipeline:**
-```
-Item Properties  → S3 Autoloader → Databricks (Batch ETL)  → Analytics
-User Events      → S3 → Lambda → Kinesis → Databricks (Streaming ETL) → Real-time KPIs
-```
-
-## 🎯 Key Features
-
-✨ **Batch Processing**
-- Databricks Autoloader for automatic S3 ingestion
-- Delta Lake Bronze → Silver → Gold medallion layers
-- Deduplication, cleaning, statistical aggregations
-
-⚡ **Real-time Streaming**
-- Lambda processes CSV records from S3 to Kinesis
-- Structured Streaming for event processing
-- 5-15 minute windowed aggregations
-- Real-time KPIs: visitor behavior, item popularity, event trends
-
-🔐 **Enterprise-Ready**
-- Terraform Infrastructure as Code (AWS + Databricks)
-- Delta Lake with ACID transactions & time travel
-- Data quality checks & schema validation
-- Comprehensive CloudWatch monitoring
-- Automated job orchestration
-
-## 📁 Project Structure
+This project implements a complete **Lambda architecture** with:
+- 📦 **Batch Layer**: Item properties data processed daily via Autoloader
+- ⚡ **Speed Layer**: Real-time events streamed via S3 → Lambda → Kinesis → Databricks
+- 🎯 **Analytics**: Multi-layer data transformation (Bronze → Silver → Gold)
 
 ```
-databricks-demo/
-├── data/
-│   ├── batch/
-│   │   ├── item_properties_part2.csv    # Item catalog (~50MB)
-│   │   └── README.md                    # Batch guide
-│   └── streaming/
-│       ├── events.csv                   # Events (~50MB)
-│       └── README.md                    # Streaming guide
-│
-├── scripts/
-│   ├── upload_to_s3.py                  # Unified S3 uploader
-│   └── README.md
-│
-├── lambda/
-│   ├── s3_streaming_processor.py         # CSV → Kinesis
-│   └── requirements.txt
-│
-├── src/
-│   ├── batch_layer/                     # Batch ETL
-│   │   ├── load_properties_bronze.py    # S3 Autoloader → Bronze
-│   │   ├── transform_properties_silver.py
-│   │   ├── aggregate_properties_gold.py
-│   │   ├── config.py                    # DB & table schemas
-│   │   └── orchestration.py             # Job definitions
-│   │
-│   └── speed_layer/                     # Streaming ETL
-│       ├── ingest_events_bronze.py      # Kinesis → Bronze
-│       ├── transform_events_silver.py
-│       ├── aggregate_events_gold.py
-│       ├── config.py
-│       └── orchestration.py
-│
-├── terraform/                           # Infrastructure as Code
-│   ├── providers.tf
-│   ├── aws.tf                           # S3, Kinesis, Lambda
-│   ├── variables.tf
-│   ├── outputs.tf
-│   ├── terraform.tfvars.example
-│   └── README.md
-│
-├── QUICK_START.md                       # 5-minute setup
-├── ARCHITECTURE_GUIDE.md                # Technical deep-dive
-└── README.md                            # This file
+Batch: CSV → S3 → Autoloader → Bronze → Silver → Gold
+Real-time: CSV → S3 → Lambda → Kinesis → Bronze → Silver → Gold
 ```
 
-## 🏗️ Architecture
+## 🎯 Quick Start
 
-### Data Layers & Flow
+Get running in 5 minutes:
 
-```
-┌─────────────────────────────────────────┬─────────────────────────────────┐
-│ BATCH LAYER (Item Properties)           │ SPEED LAYER (Events)            │
-└─────────────────────────────────────────┴─────────────────────────────────┘
-
-item_properties_part2.csv                 events.csv
-          ↓                                       ↓
-[upload_to_s3.py]                        [upload_to_s3.py]
-          ↓                                       ↓
-  S3 Bucket (Batch)                      S3 Bucket (Streaming)
-  data/batch/YYYY/MM/DD/...              data/streaming/YYYY/MM/DD/...
-          ↓                                       ↓
-Databricks Autoloader                    Lambda: s3_streaming_processor
-(Auto-detect new files)                  (S3 → Kinesis converter)
-          ↓                                       ↓
-BRONZE LAYER:                            Kinesis Stream (events-stream)
-  item_properties_bronze                           ↓
-  (Raw CSVs)                             BRONZE LAYER:
-          ↓                                events_bronze
-SILVER LAYER:                            (Structured Streaming)
-  item_properties_silver                          ↓
-  (Cleaned, deduplicated,                SILVER LAYER:
-   partitioned by date)                   events_silver
-          ↓                               (Validated, enriched,
-GOLD LAYER:                               partitioned by event_date)
-  • item_properties_summary                       ↓
-  • property_statistics               GOLD LAYER (Real-time):
-  (Aggregations & analytics)           • event_metrics_by_time (5-min)
-                                       • visitor_behavior (10-min)
-                                       • item_popularity (15-min)
-```
-
-### Data Processing Pipeline
-```
-INPUT                    PROCESSING              OUTPUT
-──────────────────────────────────────────────────────────
-                         Batch:
-Properties CSV ──→ S3 ──→ Autoloader ──→ Databricks ──→ Analytics
-                                             ↓
-                                         Bronze → Silver → Gold
-                         
-                         Speed:
-Events CSV ────→ S3 ────→ Lambda ──→ Kinesis ──→ Databricks ──→ Real-time KPIs
-                         Processor                    ↓
-                                                 Bronze → Silver → Gold
-```
-
-## 🚀 Quick Start (5 minutes)
-
-### 1️⃣ Prerequisites
-- AWS account with credentials
-- Databricks workspace with PAT token
-- Python 3.9+, Terraform 1.0+
-
-### 2️⃣ Deploy AWS Infrastructure
 ```bash
-cd terraform
-cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars with your credentials
-
+# 1. Deploy AWS infrastructure
+cd config/terraform
 terraform init
 terraform apply
 
-# Get bucket names:
-terraform output batch_data_bucket
-terraform output streaming_data_bucket
+# 2. Upload sample data
+python ../../scripts/upload_to_s3.py ../../data/batch/item_properties_part2.csv
+python ../../scripts/upload_to_s3.py ../../data/streaming/events.csv
+
+# 3. Query in Databricks
+SELECT COUNT(*) FROM bronze_layer.item_properties;
+SELECT COUNT(*) FROM bronze_layer.events;
 ```
 
-### 3️⃣ Upload Data to S3
-```bash
-export BATCH_BUCKET=$(terraform output -raw batch_data_bucket)
-export STREAMING_BUCKET=$(terraform output -raw streaming_data_bucket)
+👉 **Full guide**: [QUICK_START.md](./QUICK_START.md)
 
-# Upload batch (one-time) → Auto-ingested by Databricks
-python scripts/upload_to_s3.py data/batch/item_properties_part2.csv \
-  --bucket $BATCH_BUCKET
+## 📁 Project Structure
 
-# Upload streaming (triggers Lambda) → Events → Kinesis → Databricks
-python scripts/upload_to_s3.py data/streaming/events.csv \
-  --bucket $STREAMING_BUCKET
+| Folder | Purpose |
+|--------|---------|
+| `config/terraform/` | AWS infrastructure (S3, Kinesis, Lambda) |
+| `lambda/` | Lambda function: CSV → Kinesis processor |
+| `src/batch_layer/` | Batch ETL notebooks & jobs |
+| `src/speed_layer/` | Streaming ETL notebooks & jobs |
+| `data/` | Sample CSV files (batch & streaming) |
+| `scripts/` | Helper scripts (S3 upload, etc.) |
+
+## 🏗️ Architecture Overview
+
+```
+BATCH FLOW                          STREAMING FLOW
+──────────────────────────────────────────────────────────
+
+CSV File                            CSV File
+   ↓                                   ↓
+upload_to_s3.py                   upload_to_s3.py
+   ↓                                   ↓
+S3 (batch bucket)      →          S3 (streaming bucket)
+   ↓                                   ↓
+Databricks Autoloader              Lambda Function
+   ↓                                   ↓
+Bronze: raw properties             Kinesis Stream
+   ↓                                   ↓
+Silver: cleaned data               Bronze: raw events
+   ↓                                   ↓
+Gold: analytics tables             Silver: transformed
+                                       ↓
+                                   Gold: aggregations
 ```
 
-### 4️⃣ Initialize Databricks Tables
-Create a notebook in Databricks workspace and run:
-```python
-import sys
-sys.path.append('/Workspace/src')
+## 🔧 Tech Stack
 
-from batch_layer.config import INIT_SQL as BATCH_INIT
-from speed_layer.config import INIT_SQL as SPEED_INIT
+- **AWS**: S3, Kinesis, Lambda (no API Gateway)
+- **Databricks**: Delta Lake, Structured Streaming
+- **Python**: 3.11+
+- **Terraform**: 1.0+
 
-spark.sql(BATCH_INIT)
-spark.sql(SPEED_INIT)
-print("✅ Tables initialized")
-```
+## 📚 Documentation
 
-### 5️⃣ Start Processing Jobs
-Deploy and run jobs in Databricks from:
-- `src/batch_layer/orchestration.py` - Batch jobs
-- `src/speed_layer/orchestration.py` - Streaming jobs
+- **[⚡ QUICK_START.md](./QUICK_START.md)** - Deploy in 5 minutes
+- **[📐 ARCHITECTURE_GUIDE.md](./ARCHITECTURE_GUIDE.md)** - Deep technical details
 
-### 6️⃣ Verify Data
-```sql
--- Batch layer
-SELECT COUNT(*) FROM item_properties_bronze;
-SELECT COUNT(*) FROM item_properties_silver;
+## 🚀 Next Steps
 
--- Speed layer
-SELECT COUNT(*) FROM events_bronze;
-SELECT * FROM event_metrics_by_time ORDER BY event_at DESC LIMIT 5;
-```
+1. Review the architecture in [ARCHITECTURE_GUIDE.md](./ARCHITECTURE_GUIDE.md)
+2. Follow [QUICK_START.md](./QUICK_START.md) to deploy
+3. Check CloudWatch & Databricks for monitoring
+
+---
+
+**Ready?** Start with [QUICK_START.md](./QUICK_START.md) 🎯
 
 **→ Full setup guide: [QUICK_START.md](QUICK_START.md)**
 

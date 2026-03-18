@@ -1,0 +1,54 @@
+# Speed Layer ETL Job Definition
+resources:
+  jobs:
+    speed_etl:
+      name: "Lambda Architecture - Speed ETL"
+      description: "Real-time streaming processing from Kinesis"
+      max_concurrent_runs: 1
+      tasks:
+        # Stage 1: Ingest from Kinesis to Bronze
+        - task_key: "ingest_bronze"
+          description: "Stream events from Kinesis to Bronze layer"
+          python_wheel_task:
+            package_name: lambda_arch.speed_layer
+            entry_point: bronze_ingest
+            parameters:
+              - kinesis_stream: "{{env.KINESIS_STREAM_NAME}}"
+              - target_table: "default.events_bronze"
+          job_cluster_key: "speed_cluster"
+          timeout_seconds: 0  # Continuous job
+
+        # Stage 2: Transform Silver
+        - task_key: "transform_silver"
+          description: "Transform and validate events in Silver layer"
+          python_wheel_task:
+            package_name: lambda_arch.speed_layer
+            entry_point: silver_transform
+            parameters:
+              - source_table: "default.events_bronze"
+              - target_table: "default.events_silver"
+          job_cluster_key: "speed_cluster"
+          timeout_seconds: 0  # Continuous job
+          depends_on:
+            - task_key: "ingest_bronze"
+
+        # Stage 3: Aggregate Gold (Windowed)
+        - task_key: "aggregate_gold"
+          description: "Create windowed analytics in Gold layer"
+          python_wheel_task:
+            package_name: lambda_arch.speed_layer
+            entry_point: gold_aggregate
+            parameters:
+              - source_table: "default.events_silver"
+              - metrics_table: "default.event_metrics_by_time"
+              - behavior_table: "default.visitor_behavior_realtime"
+              - popularity_table: "default.item_popularity_realtime"
+          job_cluster_key: "speed_cluster"
+          timeout_seconds: 0  # Continuous job
+          depends_on:
+            - task_key: "transform_silver"
+
+      # Alerts
+      email_notifications:
+        on_failure:
+          - "admin@example.com"

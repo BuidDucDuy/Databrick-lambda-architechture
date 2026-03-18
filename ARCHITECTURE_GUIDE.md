@@ -1,130 +1,149 @@
 # 📐 Architecture Guide
 
-Deep-dive into the technical architecture of the Lambda system.
+Complete technical breakdown of the Lambda architecture system.
 
 ## System Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    DATABRICKS LAMBDA ARCHITECTURE                    │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│           DATABRICKS LAMBDA ARCHITECTURE                     │
+└──────────────────────────────────────────────────────────────┘
 
-INPUT SOURCES                  AWS PROCESSING               DATABRICKS LAYER
-════════════════════════════════════════════════════════════════════════════
+INPUT SOURCES          AWS PROCESSING          DATABRICKS
+═════════════════════════════════════════════════════════
 
-data/batch/                    S3 Bucket                     Autoloader
-  item_properties_     ──→    (partitioned)    ────→       ↓
-  part2.csv                   YYYY/MM/DD/                BRONZE
-                                  ↓                        ↓
-                           (auto-detected)           SILVER (cleaned)
-                                  ↓                        ↓
-                                             GOLD (analytics)
-                                            
-data/streaming/               S3 Bucket                  Structured Streaming
-  events.csv         ──→      (partitioned)    ────→       ↓
-                              YYYY/MM/DD/            BRONZE (from Kinesis)
-                                  ↓                        ↓
-                            Lambda Function          SILVER (transformed)
-                            json parse                     ↓
-                                  ↓                GOLD (windowed analytics)
-                            Kinesis Stream
-                            (Sharded by
-                             item_id)
+Batch CSV              S3 (Batch)               Autoloader
+  ↓                    Versioned                   ↓
+(item_properties)  ──→ Lifecycle Policy ─────→  Bronze
+                       30-365 days retention       ↓
+                                              Silver
+                                                ↓
+Streaming CSV          S3 (Streaming)          Gold
+  ↓                    Partitioned
+(events.csv)       ──→ Event Notifications─→  Lambda ──→ Kinesis
+                       Date-based                           ↓
+                                              Structured Streaming
+                                                   ↓
+                                              Bronze ──→
+                                                   ↓
+                                              Silver ──→
+                                                   ↓
+                                              Gold (Analytics)
 ```
 
-## Detailed Component Architecture
+## Component Architecture
 
-### 1. Data Ingestion
+### 1. Data Ingestion Layer
 
-#### Batch Layer (Item Properties)
+#### Batch (Item Properties)
 ```
-item_properties_part2.csv (50MB+)
+CSV File (50MB+)
     ↓
-[Python: upload_to_s3.py]
-    └─ Reads CSV line-by-line
-    └─ Uploads to S3 with date partitioning
-    └─ Creates: s3://bucket/data/batch/2026/03/17/item_properties_part2.csv
-    
-        ↓
-    S3 Bucket
-    └─ Versioning enabled
-    └─ Server-side encryption (SSE-S3)
-    └─ Lifecycle policy: Archive to GLACIER at 90d, delete at 365d
+upload_to_s3.py
+    ├─ Reads CSV line-by-line
+    ├─ Partitions by date: YYYY/MM/DD/
+    └─ Uploads to S3
+         ↓
+    S3 Bucket (batch)
+    ├─ Versioning: Enabled
+    ├─ Lifecycle: Archive @ 90d, Delete @ 365d
+    └─ Partitioned: data/batch/2026/03/17/...
 ```
 
-#### Streaming Layer (Events)
+**Schema:**
+```csv
+timestamp,itemid,property,value
+1620000000,123,1,red
+1620000001,123,2,large
 ```
-events.csv (50MB+)
+
+#### Streaming (Events)
+```
+CSV File (50MB+)
     ↓
-[Python: upload_to_s3.py]
-    └─ Reads CSV line-by-line
-    └─ Uploads to S3 with date partitioning
-    └─ Creates: s3://bucket/data/streaming/2026/03/17/events.csv
-    
-        ↓
-    S3 Event Notification
-    └─ Triggers on: ObjectCreated:Put, ObjectCreated:Post
-    └─ Routes to: Lambda function (s3_streaming_processor)
+upload_to_s3.py
+    ├─ Reads CSV line-by-line
+    ├─ Partitions by date: YYYY/MM/DD/
+    └─ Uploads to S3
+         ↓
+    S3 Bucket (streaming)
+    ├─ Event Notifications: On ObjectCreated
+    ├─ Lifecycle: Delete @ 30d
+    ├─ Partitioned: data/streaming/2026/03/17/...
+    └─ Triggers Lambda on file upload
+         ↓
+    Lambda: s3_streaming_processor
 ```
 
-### 2. Lambda Function (s3_streaming_processor.py)
+**Schema:**
+```csv
+timestamp,visitorid,event,itemid,transactionid
+1433221332117,user-1,view,item-1,
+1433221333118,user-1,click,item-1,
+1433221334119,user-1,purchase,item-1,txn-123
+```
 
-**Trigger:** S3 PutObject event
+### 2. Lambda Processor (s3_streaming_processor.py)
 
-**Processing:**
+**Trigger:** S3 PutObject event on streaming bucket
+
+**Processing Flow:**
 ```python
 def lambda_handler(event, context):
     1. Extract bucket & key from S3 event
     2. Download CSV from S3
     3. Parse CSV into records
     4. For each record:
-        a. Extract fields: timestamp, visitorid, event, itemid, transactionid
-        b. Validate required fields
-        c. Add metadata: _ingestion_id, _ingestion_timestamp, _source_file
-        d. Convert to JSON
-        e. Put to Kinesis with PartitionKey = itemid
-    5. Return summary: {successful: N, failed: M}
+       a. Extract: timestamp, visitorid, event, itemid, transactionid
+       b. Validate required fields
+       c. Add metadata:
+          - _ingestion_id (UUID)
+          - _ingestion_timestamp (current MS since epoch)
+          - _source_file (S3 path)
+       d. Convert to JSON
+       e. Put to Kinesis with PartitionKey = itemid
+    5. Return: {successful: N, failed: M}
 ```
 
 **Configuration:**
+- Runtime: Python 3.11
 - Memory: 512 MB (configurable)
 - Timeout: 60 seconds
-- Runtime: Python 3.11
-- Permissions:
-  - `s3:GetObject` → Streaming bucket
-  - `kinesis:PutRecord` → events-stream
+- Environment Variable: `KINESIS_STREAM` (stream name)
 
-### 3. AWS Kinesis Stream
+**IAM Permissions:**
+- `s3:GetObject` → Streaming S3 bucket
+- `kinesis:PutRecord`, `kinesis:PutRecords` → Kinesis stream
+- `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents` → CloudWatch
 
-**Name:** `events-stream`
+### 3. Kinesis Stream
 
 **Configuration:**
+- Name: `lambda-arch-events` (customizable)
 - Mode: ON_DEMAND (auto-scaling)
 - Retention: 24 hours
-- Encryption: Enabled (KMS)
-- Shard Count: Auto-scales with on-demand pricing
+- Encryption: Enabled (AWS managed)
+- Partition Key: `itemid` (ensures data co-location)
 
-**Schema:**
+**Record Schema (JSON):**
 ```json
 {
-  "timestamp": 1433221332117,           // milliseconds since epoch
-  "visitorid": "user-123",               // unique visitor ID
-  "event": "view",                       // event type
-  "itemid": "item-456",                  // product/item ID
-  "transactionid": "txn-789",            // optional transaction ID
-  "_ingestion_id": "uuid4",              // Lambda-generated
-  "_ingestion_timestamp": 1433221400000, // Lambda timestamp
-  "_source_file": "s3://bucket/..."      // Source file path
+  "timestamp": 1433221332117,
+  "visitorid": "user-123",
+  "event": "view",
+  "itemid": "item-456",
+  "transactionid": "txn-789",
+  "_ingestion_id": "550e8400-e29b-41d4-a716-446655440000",
+  "_ingestion_timestamp": 1433221400000,
+  "_source_file": "s3://bucket/data/streaming/2026/03/17/events.csv"
 }
 ```
 
-**Partitioning:** By `itemid` (data co-location)
-
-### 4. Databricks Processing Layers
+### 4. Databricks Processing
 
 #### Bronze Layer (Raw Data)
 
-**Batch: item_properties_bronze**
+**Batch Table: bronze_layer.item_properties**
 ```sql
 CREATE TABLE item_properties_bronze (
   timestamp BIGINT,
@@ -137,7 +156,7 @@ CREATE TABLE item_properties_bronze (
 USING DELTA
 ```
 
-**Speed: events_bronze**
+**Speed Table: bronze_layer.events**
 ```sql
 CREATE TABLE events_bronze (
   timestamp BIGINT,
@@ -152,20 +171,13 @@ CREATE TABLE events_bronze (
 USING DELTA
 ```
 
-**Ingestion Method:**
-- **Batch:** Databricks Autoloader (Cloud Files API)
-  - Listens to S3 path
-  - Automatically detects new files
-  - Processes on schedule or continuously
-  
-- **Speed:** Structured Streaming from Kinesis
-  - Reads from shard (with auto-position)
-  - Continuous stream processing
-  - Fault-tolerant checkpoints
+**Ingestion:**
+- **Batch**: Databricks Autoloader reads from S3 (auto-detect new files)
+- **Speed**: Structured Streaming reads from Kinesis (continuous)
 
-#### Silver Layer (Cleaned Data)
+#### Silver Layer (Cleaned & Transformed)
 
-**Batch: item_properties_silver**
+**Batch: transform_properties_silver.py**
 ```sql
 SELECT
   DATE(FROM_UNIXTIME(timestamp / 1000)) as date,
@@ -176,23 +188,20 @@ SELECT
 FROM item_properties_bronze
 WHERE timestamp IS NOT NULL
   AND itemid IS NOT NULL
-  AND property IS NOT NULL
 QUALIFY ROW_NUMBER() OVER (PARTITION BY itemid, property ORDER BY timestamp DESC) = 1
--- Deduplicates by keeping latest per (itemid, property)
 ```
 
-**Speed: events_silver**
+**Speed: transform_events_silver.py**
 ```sql
 SELECT
   timestamp,
   visitorid,
-  LOWER(event) as event,  -- Normalize
+  LOWER(event) as event,
   itemid,
   transactionid,
   CAST(timestamp / 1000.0 AS TIMESTAMP) as event_time,
-  CAST(timestamp / 1000.0 AS DATE) as event_date,
+  DATE(CAST(timestamp / 1000.0 AS TIMESTAMP)) as event_date,
   HOUR(CAST(timestamp / 1000.0 AS TIMESTAMP)) as event_hour,
-  (CURRENT_TIMESTAMP() * 1000 - timestamp) as latency_ms,
   _ingestion_id,
   _ingestion_timestamp,
   _source_file
@@ -204,308 +213,214 @@ WHERE timestamp IS NOT NULL
 
 #### Gold Layer (Analytics)
 
-**Batch Gold Tables:**
+**Batch Analytics:**
+- `item_properties_summary`: Items ↔ properties mapping
+- `property_statistics`: Property popularity
 
-1. **item_properties_summary**
-   - Items ↔ Properties mapping
-   - Unique values per property
-   - Popular items
+**Speed Analytics (Windowed):**
+```sql
+-- 5-minute event metrics
+SELECT
+  WINDOW(event_time, '5 minutes') as time_window,
+  event,
+  COUNT(*) as event_count
+FROM events_silver
+GROUP BY WINDOW(event_time, '5 minutes'), event
 
-2. **property_statistics**
-   - Property occurrence counts
-   - Item count per property
-   - Property popularity rank
-
-**Speed Gold Tables:**
-
-1. **event_metrics_by_time** (5-min windows)
-   ```sql
-   SELECT
-     WINDOW(event_time, '5 minutes') as event_window,
-     event,
-     COUNT(*) as event_count,
-     COUNT(DISTINCT visitorid) as unique_visitors,
-     COUNT(DISTINCT transactionid) as transactions
-   FROM events_silver
-   GROUP BY WINDOW(event_time, '5 minutes'), event
-   ```
-
-2. **visitor_behavior_real_time** (10-min windows)
-   ```sql
-   SELECT
-     WINDOW(event_time, '10 minutes') as behavior_window,
-     visitorid,
-     COUNT(*) as events_count,
-     COUNT(DISTINCT event) as event_types,
-     MAX(event_time) as last_activity
-   FROM events_silver
-   GROUP BY WINDOW(event_time, '10 minutes'), visitorid
-   ```
-
-3. **item_popularity_real_time** (15-min windows)
-   ```sql
-   SELECT
-     WINDOW(event_time, '15 minutes') as popularity_window,
-     itemid,
-     COUNT(*) as total_interactions,
-     COUNTIF(event = 'purchase') as purchase_count,
-     COUNTIF(event = 'view') as view_count
-   FROM events_silver
-   GROUP BY WINDOW(event_time, '15 minutes'), itemid
-   ```
-
-## Data Schemas
-
-### Input CSV Formats
-
-**Batch CSV: item_properties_part2.csv**
-```csv
-timestamp,itemid,property,value
-1620000000,123,1,red
-1620000001,123,2,large
-1620000002,456,1,blue
+-- 15-minute item popularity
+SELECT
+  WINDOW(event_time, '15 minutes') as time_window,
+  itemid,
+  COUNT(*) as interactions,
+  COUNTIF(event = 'purchase') as purchases
+FROM events_silver
+GROUP BY WINDOW(event_time, '15 minutes'), itemid
 ```
 
-**Streaming CSV: events.csv**
-```csv
-timestamp,visitorid,event,itemid,transactionid
-1433221332117,user-1,view,item-1,
-1433221333118,user-1,click,item-1,
-1433221334119,user-1,purchase,item-1,txn-123
-```
-
-## Processing Pipelines
-
-### Batch Pipeline
+## Data Flow Diagram
 
 ```
-1. Upload CSV to S3
-   ↓ (partitioned by date)
-   
-2. Autoloader detects new files
-   ↓ (~every 1-2 minutes)
-   
-3. Ingest to Bronze
-   ↓ load_properties_bronze.py (scheduled job)
-   
-4. Transform to Silver
-   ↓ transform_properties_silver.py (deduplicate, clean)
-   
-5. Aggregate to Gold
-   ↓ aggregate_properties_gold.py (analytics tables)
+┌─────────────────┐
+│ Batch CSV       │
+└────────┬────────┘
+         │
+         ▼
+┌──────────────────────────┐         ┌────────────────┐
+│ upload_to_s3.py          │         │ S3 (batch)     │
+│ ├─ Partitions           │────────▶│ versioned      │
+│ └─ Uploads              │         │ lifecycle      │
+└──────────────────────────┘         └────────┬───────┘
+                                             │
+                                             ▼
+┌─────────────────┐                ┌──────────────────┐
+│ Streaming CSV   │                │ Autoloader       │
+└────────┬────────┘                │ (auto-detect)    │
+         │                         └────────┬─────────┘
+         ▼                                  │
+┌──────────────────────────┐               ▼
+│ upload_to_s3.py          │         ┌──────────────────┐
+│ ├─ Partitions           │         │ BRONZE           │
+│ └─ Uploads              │         │ item_properties  │
+└──────────────────────────┘         └────────┬─────────┘
+         │                                   │
+         │ S3 Event                         ▼
+         │ (ObjectCreated)           ┌──────────────────┐
+         ▼                           │ SILVER           │
+┌──────────────────────────┐         │ cleaned data     │
+│ Lambda Processor         │         └────────┬─────────┘
+│ ├─ Parse CSV            │                 │
+│ ├─ Validate fields      │                 ▼
+│ ├─ Add metadata         │         ┌──────────────────┐
+│ └─ Send to Kinesis      │         │ GOLD             │
+└──────────────────────────┘         │ analytics        │
+         │                           └──────────────────┘
+         │ Records
+         ▼
+┌──────────────────────────┐
+│ Kinesis Stream           │
+│ (ON_DEMAND, 24h ret.)   │
+└──────────────────────────┘
+         │
+         │ Structured Streaming
+         ▼
+┌──────────────────────────┐
+│ BRONZE                   │
+│ events_bronze            │
+└──────────────────────────┘
+         │
+         ▼
+┌──────────────────────────┐
+│ SILVER                   │
+│ events_silver            │
+└──────────────────────────┘
+         │
+         ▼
+┌──────────────────────────┐
+│ GOLD (Real-time)         │
+│ ├─ 5-min event metrics   │
+│ ├─ 10-min visitor behavior
+│ └─ 15-min item popularity
+└──────────────────────────┘
 ```
 
-**Execution:**
-- Manual: Run script directly in Databricks
-- Scheduled: Daily at midnight UTC (configurable)
-- Triggered: On-demand via API call
+## Deployment Architecture
 
-### Streaming Pipeline
+### Terraform Structure
 
 ```
-1. Upload CSV to S3
-   ↓ (partitioned by date)
-   
-2. S3 event triggers Lambda
-   ↓ (~immediate)
-   
-3. Lambda processes CSV to Kinesis
-   ↓ (1000s records/sec)
-   
-4. Structured Streaming reads Kinesis
-   ↓ ingest_events_bronze.py (continuous job)
-   
-5. Transform to Silver
-   ↓ transform_events_silver.py (continuous)
-   
-6. Aggregate to Gold
-   ↓ aggregate_events_gold.py (windowed aggregations)
+config/terraform/
+├── providers.tf          # AWS provider config
+├── variables.tf          # Variable definitions
+├── s3.tf                 # S3 buckets (batch & streaming)
+├── kinesis.tf            # Kinesis stream
+├── lambda.tf             # Lambda function & IAM
+├── outputs.tf            # Output values
+└── terraform.tfvars      # Configuration (customize!)
 ```
 
-**Execution:**
-- Continuous: Jobs run indefinitely
-- Scalable: Auto-scales with Kinesis shards
-- Fault-tolerant: Checkpointed state
+### Key Outputs
 
-## Performance & Scaling
+| Output | Value | Used For |
+|--------|-------|----------|
+| `batch_bucket_name` | S3 bucket | Batch data uploads |
+| `streaming_bucket_name` | S3 bucket | Streaming data uploads |
+| `kinesis_stream_name` | Stream name | Databricks Kinesis connection |
+| `lambda_function_name` | Function name | Monitoring & debugging |
 
-### Capacity
+## Performance Characteristics
 
-| Component | Throughput | Notes |
-|-----------|-----------|-------|
-| Lambda | ~3000 records/min per 512MB | Adjust memory for speed |
-| Kinesis | On-demand | Scales automatically |
-| Databricks | Depends on cluster | Scale worker count |
-| S3 | Unlimited | Standard throughput |
+### Throughput
 
-### Optimization Tips
+| Component | Capacity | Notes |
+|-----------|----------|-------|
+| Lambda | ~100 CSV records/sec | 512MB memory |
+| Kinesis (ON_DEMAND) | Auto-scales | Unlimited |
+| Databricks Autoloader | ~1000 records/sec | Cluster dependent |
+| Structured Streaming | ~10000 records/sec | Cluster dependent |
 
-1. **Lambda:**
-   - Increase memory for CPU-bound processing
-   - Batch S3 uploads to reduce invocations
-   - Monitor execution duration in CloudWatch
+### Latency
 
-2. **Kinesis:**
-   - Default on-demand scaling sufficient for most workloads
-   - Monitor iterator age for lag detection
-   - Adjust partition key for even distribution
-
-3. **Databricks:**
-   - Use `OPTIMIZE` on Gold tables regularly
-   - Enable auto-compaction for Delta tables
-   - Right-size cluster for streaming jobs
-
-4. **S3:**
-   - Use S3 Select for large files (cost optimization)
-   - Enable CloudFront for frequently accessed data
-   - Configure lifecycle policies for cost
-
-## Security Architecture
-
-### IAM Roles
-
-**Databricks EC2 Instance Profile:**
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "s3:ListBucket",
-        "s3:GetObject"
-      ],
-      "Resource": [
-        "arn:aws:s3:::batch-bucket",
-        "arn:aws:s3:::batch-bucket/*",
-        "arn:aws:s3:::streaming-bucket",
-        "arn:aws:s3:::streaming-bucket/*"
-      ]
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "kinesis:GetRecords",
-        "kinesis:GetShardIterator",
-        "kinesis:DescribeStream",
-        "kinesis:ListStreams"
-      ],
-      "Resource": "arn:aws:kinesis:*:*:stream/events-stream"
-    }
-  ]
-}
-```
-
-**Lambda Execution Role:**
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": "s3:GetObject",
-      "Resource": "arn:aws:s3:::streaming-bucket/*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": "kinesis:PutRecord",
-      "Resource": "arn:aws:kinesis:*:*:stream/events-stream"
-    }
-  ]
-}
-```
-
-### Data Encryption
-
-- **S3:** Server-side encryption (SSE-S3)
-- **Kinesis:** KMS encryption
-- **Databricks:** Workspace encryption + network encryption
-- **Transit:** HTTPS for all API calls
-
-### Network Security
-
-- **VPC Endpoint:** S3 Gateway endpoint (for private connectivity)
-- **Security Groups:** Restrict Databricks cluster to Lambda
-- **IAM:** Minimum privilege access
+| Stage | Latency |
+|-------|---------|
+| S3 Upload → Lambda Trigger | ~100ms |
+| CSV Parse → Kinesis Put | ~50-100ms |
+| Kinesis → Databricks Read | ~1-5 seconds |
+| Full pipeline E2E | ~10-20 seconds |
 
 ## Monitoring & Observability
 
 ### CloudWatch Metrics
 
 **Lambda:**
-```
-Metrics:
-- Invocations (calls/minute)
-- Errors (failed calls)
-- Duration (execution time)
-- ConcurrentExecutions (parallel runs)
-
-Logs: /aws/lambda/s3-streaming-processor
-```
+- `Invocations` - CSV files processed
+- `Duration` - Execution time
+- `Errors` - Failed invocations
+- `ConcurrentExecutions` - Parallel runs
 
 **Kinesis:**
-```
-Metrics:
-- IncomingRecords (records/minute)
-- IncomingBytes (MB/minute)
-- GetRecords.IteratorAgeMilliseconds (lag)
-- ReadProvisionedThroughputExceeded (backpressure)
-```
+- `IncomingRecords` - Records/minute
+- `GetRecords.IteratorAge` - Databricks lag
+- `WriteProvisionedThroughputExceeded` - Throttling
 
 **S3:**
-```
-Metrics:
-- NumberOfObjects (file count)
-- BucketSizeBytes (storage size)
-- AllRequests (API calls)
-```
+- `NumberOfObjects` - File count
+- `BucketSizeBytes` - Storage size
+- `4xxErrors`, `5xxErrors` - Request errors
 
 ### Databricks Monitoring
 
 ```sql
 -- Data freshness
-SELECT MAX(_ingestion_timestamp) as latest FROM events_bronze;
+SELECT MAX(_ingestion_timestamp) FROM events_bronze;
 
--- Ingestion rate
+-- Records ingested per hour
 SELECT 
-  DATE(_ingestion_timestamp) as date,
+  CAST(FROM_UNIXTIME(_ingestion_timestamp / 1000 / 3600 * 3600) AS DATE),
   COUNT(*) as records
 FROM events_bronze
-GROUP BY DATE(_ingestion_timestamp)
-ORDER BY date DESC LIMIT 7;
-
--- Job health
-SELECT 
-  job_name, 
-  status, 
-  duration_seconds,
-  start_time
-FROM system.compute.jobs
-ORDER BY start_time DESC LIMIT 10;
+GROUP BY 1
+ORDER BY 1 DESC;
 ```
+
+## Security
+
+### IAM Permissions
+
+**Lambda Execution Role:**
+- `s3:GetObject` on `streaming/` prefix
+- `kinesis:PutRecord`, `kinesis:PutRecords`
+- `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents`
+
+**S3 Bucket Policies:**
+- Versioning enabled
+- Server-side encryption (default)
+- Access logging optional
+
+**Kinesis Stream:**
+- Encryption enabled (AWS managed)
+- Access via IAM roles only
 
 ## Disaster Recovery
 
 ### Backup Strategy
 
-- **S3:** Versioning enabled, automatic backups
-- **Databricks:** Time travel via Delta Lake (30-day default)
-- **Kinesis:** 24-hour retention built-in
+- **S3 Versioning**: Keep 365+ days of historical files
+- **Kinesis Retention**: 24-hour buffer built-in
+- **Delta Lake**: 30-day time travel available
 
 ### Recovery Procedures
 
-1. **Data Loss:**
-   - Restore from S3 versioning
-   - Use Delta Lake time travel: `SELECT * FROM table VERSION AS OF timestamp`
+1. **Lost Records**: Replay from S3 version or Kinesis buffer
+2. **Failed Lambda**: Re-trigger manually via CloudWatch
+3. **Kinesis Lag**: Increase shard count (ON_DEMAND mode auto-scales)
 
-2. **Failed Jobs:**
-   - Check logs in CloudWatch / Databricks
-   - Replay from checkpoint or re-upload data
+## Optimization Tips
 
-3. **Cluster Failure:**
-   - Databricks auto-recovery or manual restart
-   - Streaming jobs resume from checkpoint
+1. **Lambda Memory**: Increase for CPU-bound processing (~1GB for large files)
+2. **Batch Uploading**: Upload multiple files at once to reduce Lambda invocations
+3. **Kinesis Partitions**: Ensure even distribution across itemid values
+4. **Databricks Cluster**: Use auto-scaling for optimal cost/performance
 
 ---
 
-For implementation details, see [README.md](../README.md) and [QUICK_START.md](../QUICK_START.md).
+For implementation details, see [QUICK_START.md](./QUICK_START.md).

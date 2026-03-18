@@ -2,112 +2,129 @@
 
 Get the entire system running in 5 minutes.
 
-## Prerequisites (1 min)
+## Prerequisites (30 seconds)
 
 ✅ Have these ready:
-- AWS account credentials (`aws configure`)
-- Databricks workspace URL & PAT token
+- AWS account with credentials (`aws configure`)
 - Python 3.9+ installed
 - Terraform 1.0+ installed
 
-## Step 1: Clone & Configure (1 min)
+## Step 1: Deploy Infrastructure (1 minute)
 
 ```bash
-git clone <repo> && cd databricks-demo
-
-cd terraform
-cp terraform.tfvars.example terraform.tfvars
-
-# Edit terraform.tfvars
-# Set: aws_region, databricks_host, databricks_token
-```
-
-## Step 2: Deploy Infrastructure (2 min)
-
-```bash
+cd config/terraform
 terraform init
 terraform apply
 
-# Save outputs for next steps
-terraform output > outputs.txt
+# Note the outputs:
+# - batch_bucket_name
+# - streaming_bucket_name
+# - kinesis_stream_name
+# - lambda_function_name
 ```
 
-**What gets created:**
-- ✅ S3 buckets (batch & streaming data)
-- ✅ Kinesis stream (events-stream)
-- ✅ Lambda function (CSV → Kinesis processor)
-- ✅ IAM roles & policies
+Save these values - you'll need them next.
 
-## Step 3: Upload Data to S3 (1 min)
+## Step 2: Upload Sample Data (1 minute)
+
+From the **project root** directory:
 
 ```bash
-# Get bucket names
-export BATCH_BUCKET=$(terraform output -raw batch_data_bucket)
-export STREAMING_BUCKET=$(terraform output -raw streaming_data_bucket)
+# Get bucket names from Terraform outputs
+export BATCH_BUCKET=$(cd config/terraform && terraform output -raw batch_bucket_name)
+export STREAMING_BUCKET=$(cd config/terraform && terraform output -raw streaming_bucket_name)
 
-# Upload batch data (one-time) → Autoloader ingests
-python ../scripts/upload_to_s3.py ../data/batch/item_properties_part2.csv \
-  --bucket $BATCH_BUCKET
+# Upload batch data (processed by Autoloader)
+python scripts/upload_to_s3.py data/batch/item_properties_part2.csv --bucket $BATCH_BUCKET
 
-# Upload streaming (triggers Lambda) → Kinesis → Databricks
-python ../scripts/upload_to_s3.py ../data/streaming/events.csv \
-  --bucket $STREAMING_BUCKET
+# Upload streaming data (triggers Lambda → Kinesis)
+python scripts/upload_to_s3.py data/streaming/events.csv --bucket $STREAMING_BUCKET
 ```
 
-## Step 4: Initialize Databricks Tables (1 min)
+## Step 3: Create Databricks Tables (2 minutes)
 
-In your Databricks workspace, create a new notebook and run:
+In your **Databricks workspace**, create a new notebook and run:
 
 ```python
-import sys
-sys.path.append('/Workspace/src')
+# Create Bronze tables
+spark.sql("""
+CREATE TABLE IF NOT EXISTS bronze_layer.item_properties (
+  timestamp BIGINT,
+  itemid INT,
+  property INT,
+  value STRING,
+  _ingestion_time TIMESTAMP,
+  _source_file STRING
+)
+USING DELTA
+""")
 
-from batch_layer.config import INIT_SQL as B
-from speed_layer.config import INIT_SQL as S
+spark.sql("""
+CREATE TABLE IF NOT EXISTS bronze_layer.events (
+  timestamp BIGINT,
+  visitorid STRING,
+  event STRING,
+  itemid STRING,
+  transactionid STRING,
+  _ingestion_id STRING,
+  _ingestion_timestamp BIGINT,
+  _source_file STRING
+)
+USING DELTA
+""")
 
-spark.sql(B); spark.sql(S)
-print("✅ Ready to go!")
+print("✅ Bronze tables created!")
 ```
 
----
+## Step 4: Query Your Data (1 minute)
+
+```sql
+-- Count batch records
+SELECT COUNT(*) as batch_records FROM bronze_layer.item_properties;
+
+-- Count event records  
+SELECT COUNT(*) as event_records FROM bronze_layer.events;
+
+-- Sample data
+SELECT * FROM bronze_layer.events LIMIT 10;
+```
 
 ## ✅ You're Done!
 
-Check data in Databricks:
-```sql
-SELECT COUNT(*) FROM item_properties_bronze;  -- Batch data
-SELECT COUNT(*) FROM events_bronze;            -- Events from Kinesis
-```
+Your pipeline is now running:
+- ✅ S3 buckets created
+- ✅ Kinesis stream active
+- ✅ Lambda function deployed
+- ✅ Data flowing into Databricks
 
-## Next Steps
+## 🎯 Next Steps
 
-1. **Deploy Jobs** in Databricks:
-   - Use `src/batch_layer/orchestration.py`
-   - Use `src/speed_layer/orchestration.py`
+1. **Create Silver tables** - Add deduplication & validation logic
+2. **Create Gold tables** - Build analytics aggregations
+3. **Set up jobs** - Schedule batch and streaming pipelines
+4. **Monitor** - Check CloudWatch for Lambda execution
 
-2. **Monitor** in CloudWatch:
-   - Lambda invocations
-   - Kinesis put-record rate
-   - S3 upload activity
+## 📚 Learn More
 
-3. **Review docs**:
-   - [README.md](../README.md) - Full project info
-   - [ARCHITECTURE_GUIDE.md](../ARCHITECTURE_GUIDE.md) - Detailed architecture
+- [ARCHITECTURE_GUIDE.md](./ARCHITECTURE_GUIDE.md) - Deep technical details
+- [AWS Terraform](./config/terraform/) - Infrastructure code
 
-## Troubleshooting
+## 🐛 Troubleshooting
 
-**Lambda not working?**
-- Check S3 event notifications
-- Verify Lambda permissions in AWS console
+**Lambda not running?**
+- Check S3 event notifications in AWS console
+- Verify Lambda has S3 & Kinesis permissions
 
-**Data not in Databricks?**
-- Ensure Kinesis stream exists
-- Check cluster is running
+**Data not appearing in Databricks?**
+- Ensure tables are created correctly
+- Check Autoloader configuration
+- Verify Databricks cluster is running
 
-**Autoloader not picking up files?**
-- Verify S3 path: `s3://bucket/data/batch/YYYY/MM/DD/...`
-- Check table schema matches CSV
+**S3 upload failing?**
+- `aws configure` with correct credentials
+- Verify bucket name is correct
+- Check IAM permissions
 
 ---
 
-**Ready?** Let's go! 🚀
+**Questions?** See [ARCHITECTURE_GUIDE.md](./ARCHITECTURE_GUIDE.md) for detailed explanations.

@@ -28,8 +28,8 @@ env/
 ENV/
 
 # Jupyter Notebook
-.ipynb_checkpoints/
-*.ipynb
+# .ipynb_checkpoints/
+# .ipynb
 
 # IDE
 .vscode/
