@@ -1,3 +1,4 @@
+
 # Speed Layer ETL Job Definition
 resources:
   jobs:
@@ -15,6 +16,12 @@ resources:
         # Stage 1: Ingest from Kinesis to Bronze
         - task_key: "ingest_bronze"
           description: "Stream events from Kinesis to Bronze layer"
+          python_wheel_task:
+            package_name: lambda_arch.speed_layer
+            entry_point: bronze_ingest
+            parameters:
+              - kinesis_stream: "{{env.KINESIS_STREAM_NAME}}"
+              - target_table: "default.events_bronze"
           notebook_task:
             notebook_path: "/Workspace/src/speed_layer/bronze_layer/ingest_events_bronze"
           job_cluster_key: "speed_cluster"
@@ -23,16 +30,28 @@ resources:
         # Stage 2: Transform Silver
         - task_key: "transform_silver"
           description: "Transform and validate events in Silver layer"
+          python_wheel_task:
+            package_name: lambda_arch.speed_layer
+            entry_point: silver_transform
+            parameters:
+              - source_table: "default.events_bronze"
+              - target_table: "default.events_silver"
           notebook_task:
             notebook_path: "/Workspace/src/speed_layer/silver_layer/transform_events_silver"
           job_cluster_key: "speed_cluster"
           timeout_seconds: 0  # Continuous job
           depends_on:
-            - task_key: "ingest_bronze"
-
         # Stage 3: Aggregate Gold (Windowed)
         - task_key: "aggregate_gold"
           description: "Create windowed analytics in Gold layer"
+          python_wheel_task:
+            package_name: lambda_arch.speed_layer
+            entry_point: gold_aggregate
+            parameters:
+              - source_table: "default.events_silver"
+              - metrics_table: "default.event_metrics_by_time"
+              - behavior_table: "default.visitor_behavior_realtime"
+              - popularity_table: "default.item_popularity_realtime"
           notebook_task:
             notebook_path: "/Workspace/src/speed_layer/gold_layer/aggregate_events_gold"
           job_cluster_key: "speed_cluster"

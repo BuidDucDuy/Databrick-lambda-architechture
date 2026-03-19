@@ -1,210 +1,106 @@
-"""
-Speed Layer - Gold: Real-time analytics and aggregations
-Creates real-time dashboards and metrics from event stream
-"""
+
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
-    col, count, countDistinct, sum as spark_sum,
-    window, approx_percentile, max as spark_max,
-    date_format, hour, minute
+    col, count, countDistinct, first, 
+    min as spark_min, max as spark_max,
+    collect_list, sort_array
 )
 from datetime import datetime
 
 def get_spark():
     """Initialize Spark session"""
     return SparkSession.builder \
-        .appName("EventsGold") \
+        .appName("ItemPropertiesGold") \
         .getOrCreate()
 
-def create_event_metrics(
+def create_properties_summary(
     spark: SparkSession,
-    source_table: str = 'events_silver',
-    target_table: str = 'event_metrics_by_time'
+    source_table: str = 'dev.silver.batch',
+    target_table: str = 'dev.gold.item_properties_summary'
 ) -> DataFrame:
-    """
-    Create real-time event metrics aggregated by time windows.
-    Tracks event counts, user engagement, and conversion metrics.
+    print(f" Creating property summary from {source_table}")
     
-    Args:
-        spark: Spark session
-        source_table: Source Silver streaming table
-        target_table: Target Gold table for metrics
+    # Read from Silver
+    df = spark.table(source_table)
     
-    Returns:
-        Streaming DataFrame with metrics
-    """
-    print(f"🔄 Creating real-time event metrics")
-    
-    df = spark.readStream.table(source_table)
-    
-    # Create metrics aggregated by 5-minute windows
-    metrics = df.groupBy(
-        window(col("event_time"), "5 minutes", "1 minute")
-    ).agg(
-        count("*").alias("total_events"),
-        countDistinct("visitor_id").alias("unique_visitors"),
-        countDistinct("item_id").alias("unique_items"),
-        countDistinct("transaction_id").alias("transactions"),
-        spark_sum(
-            col("event_type") == "purchase"
-        ).alias("purchases"),
-        approx_percentile("ingestion_latency_seconds", 0.5).alias("median_latency_seconds")
-    ).select(
-        col("window.start").alias("window_start"),
-        col("window.end").alias("window_end"),
-        "*"
-    ).drop("window")
-    
-    print(f"✅ Event metrics defined")
+    # Aggregate by item_id
+    summary = df.groupBy("item_id") \
+        .agg(
+            count("property_id").alias("total_properties"),
+            countDistinct("property_id").alias("unique_properties"),
+            first(col("date")).alias("last_updated"),
+            collect_list(
+                col("property_id")
+            ).alias("property_ids"),
+            collect_list(
+                col("property_value")
+            ).alias("property_values")
+        ) \
+        .orderBy(col("total_properties").desc())
     
     # Write to Gold table
-    query = metrics.writeStream \
+    summary.write \
+        .mode("overwrite") \
         .format("delta") \
-        .mode("append") \
-        .option("checkpointLocation", "/mnt/dbfs/checkpoints/event_metrics") \
         .option("mergeSchema", "true") \
-        .table(target_table)
+        .saveAsTable(target_table)
     
-    print(f"💾 Streaming write to {target_table}")
+    print(f"✅ Summary created: {summary.count():,} unique items")
+    print(f"💾 Data written to {target_table}")
     
-    return query
+    return summary
 
-def create_visitor_behavior(
+def create_property_statistics(
     spark: SparkSession,
-    source_table: str = 'events_silver',
-    target_table: str = 'visitor_behavior_real_time'
+    source_table: str = 'dev.silver.batch_silver',
+    target_table: str = 'dev.gold.property_statistics'
 ) -> DataFrame:
     """
-    Create real-time visitor behavior analysis.
-    Tracks engagement metrics per visitor over time windows.
+    Create statistics by property_id.
+    Shows how many items have each property.
     
     Args:
         spark: Spark session
-        source_table: Source Silver streaming table
+        source_table: Source Silver table
         target_table: Target Gold table
     
     Returns:
-        Streaming DataFrame
+        Statistics DataFrame
     """
-    print(f"🔄 Creating visitor behavior analytics")
+    print(f"🔄 Creating property statistics")
     
-    df = spark.readStream.table(source_table)
+    df = spark.table(source_table)
     
-    behavior = df.groupBy(
-        window(col("event_time"), "10 minutes"),
-        "visitor_id"
-    ).agg(
-        count("*").alias("event_count"),
-        countDistinct("item_id").alias("items_viewed"),
-        spark_sum(
-            (col("event_type") == "purchase").cast("int")
-        ).alias("purchases"),
-        spark_sum(
-            (col("event_type") == "view").cast("int")
-        ).alias("views"),
-        approx_percentile("ingestion_latency_seconds", 0.5).alias("avg_latency_ms")
-    ).select(
-        col("window.start").alias("window_start"),
-        col("visitor_id"),
-        "event_count",
-        "items_viewed",
-        "purchases",
-        "views",
-        "avg_latency_ms"
-    )
+    stats = df.groupBy("property_id") \
+        .agg(
+            countDistinct("item_id").alias("items_with_property"),
+            count("*").alias("total_records"),
+            countDistinct("property_value").alias("unique_values")
+        ) \
+        .orderBy(col("items_with_property").desc())
     
-    # Write to Gold table
-    query = behavior.writeStream \
+    stats.write \
+        .mode("overwrite") \
         .format("delta") \
-        .mode("append") \
-        .option("checkpointLocation", "/mnt/dbfs/checkpoints/visitor_behavior") \
         .option("mergeSchema", "true") \
-        .table(target_table)
+        .saveAsTable(target_table)
     
-    print(f"💾 Streaming write to {target_table}")
+    print(f"✅ Property statistics created")
+    print(f"💾 Data written to {target_table}")
     
-    return query
-
-def create_item_popularity(
-    spark: SparkSession,
-    source_table: str = 'events_silver',
-    target_table: str = 'item_popularity_real_time'
-) -> DataFrame:
-    """
-    Create real-time item popularity ranking.
-    Shows trending items based on view/purchase counts.
-    
-    Args:
-        spark: Spark session
-        source_table: Source Silver streaming table
-        target_table: Target Gold table
-    
-    Returns:
-        Streaming DataFrame
-    """
-    print(f"🔄 Creating item popularity ranking")
-    
-    df = spark.readStream.table(source_table)
-    
-    popularity = df.groupBy(
-        window(col("event_time"), "15 minutes"),
-        "item_id"
-    ).agg(
-        count("*").alias("total_interactions"),
-        spark_sum(
-            (col("event_type") == "view").cast("int")
-        ).alias("total_views"),
-        spark_sum(
-            (col("event_type") == "purchase").cast("int")
-        ).alias("total_purchases"),
-        countDistinct("visitor_id").alias("unique_visitors")
-    ).select(
-        col("window.start").alias("window_start"),
-        "item_id",
-        "total_interactions",
-        "total_views",
-        "total_purchases",
-        "unique_visitors"
-    )
-    
-    # Write to Gold table
-    query = popularity.writeStream \
-        .format("delta") \
-        .mode("append") \
-        .option("checkpointLocation", "/mnt/dbfs/checkpoints/item_popularity") \
-        .option("mergeSchema", "true") \
-        .table(target_table)
-    
-    print(f"💾 Streaming write to {target_table}")
-    
-    return query
+    return stats
 
 if __name__ == "__main__":
     spark = get_spark()
     
-    # Start all streaming jobs
-    queries = []
-    
-    queries.append(create_event_metrics(
+    create_properties_summary(
         spark=spark,
-        source_table="default.events_silver",
-        target_table="default.event_metrics_by_time"
-    ))
+        source_table="dev.silver.batch_silver",
+        target_table="dev.gold.item_properties_summary"
+    )
     
-    queries.append(create_visitor_behavior(
+    create_property_statistics(
         spark=spark,
-        source_table="default.events_silver",
-        target_table="default.visitor_behavior_real_time"
-    ))
-    
-    queries.append(create_item_popularity(
-        spark=spark,
-        source_table="default.events_silver",
-        target_table="default.item_popularity_real_time"
-    ))
-    
-    print(f"\n✅ All streaming queries started")
-    print(f"   Active streams: {len(queries)}")
-    
-    # Keep all streams running
-    spark.streams.awaitAnyTermination()
+        source_table="dev.silver.batch_silver",
+        target_table="dev.gold.property_statistics"
+    )
