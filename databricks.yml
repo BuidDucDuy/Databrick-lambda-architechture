@@ -5,9 +5,10 @@ bundle:
 sync:
   include:
     - "src/**"
+    
+  exclude:
     - "resources/**"
     - "config/DAB/**"
-  exclude:
     - "config/terraform/**"
     - "lambda/**"
     - "data/**"

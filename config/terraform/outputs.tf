@@ -42,3 +42,8 @@ output "lambda_role_arn" {
   description = "Lambda execution role ARN"
   value       = aws_iam_role.lambda_execution.arn
 }
+
+output "databricks_instance_profile_arn" {
+  description = "Instance profile ARN for Databricks job clusters"
+  value       = aws_iam_instance_profile.databricks_instance_profile.arn
+}

@@ -127,6 +127,57 @@ resource "aws_iam_role_policy" "lambda_policy" {
     ]
   })
 }
+# ============================================================================
+# IAM Role for Databricks Instances (Job Clusters)
+# ============================================================================
+resource "aws_iam_role" "databricks_instance_role" {
+  name = "databricks-instance-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "databricks_s3_access" {
+  name = "databricks-s3-access"
+  role = aws_iam_role.databricks_instance_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:ListBucket",
+          "s3:PutObject",
+          "s3:DeleteObject"
+        ]
+        Resource = [
+          aws_s3_bucket.batch_data.arn,
+          "${aws_s3_bucket.batch_data.arn}/*",
+          aws_s3_bucket.streaming_data.arn,
+          "${aws_s3_bucket.streaming_data.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_instance_profile" "databricks_instance_profile" {
+  name = "databricks-instance-profile"
+  role = aws_iam_role.databricks_instance_role.name
+}
+
 resource "aws_cloudwatch_log_group" "lambda_log" {
   name              = "/aws/lambda/${aws_lambda_function.s3_processor.function_name}"
   retention_in_days = 7 
@@ -191,3 +242,5 @@ resource "aws_s3_bucket_notification" "streaming_notification" {
     
   }
 }
+
+

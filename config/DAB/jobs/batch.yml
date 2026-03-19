@@ -1,64 +1,46 @@
-
-# Batch Layer ETL Job Definition
 resources:
   jobs:
     batch_etl:
-      name: "Lambda Architecture - Batch ETL"
-      description: "Daily batch processing of item properties from S3"
+      name: "Lambda Architecture - Batch ETL Serverless"
       max_concurrent_runs: 1
-      job_clusters:
-        - job_cluster_key: "batch_cluster"
-          new_cluster:
-            spark_version: "13.3.x-scala2.12"
-            node_type_id: "i3.xlarge"
-            num_workers: 2
+
       tasks:
         # Stage 1: Ingest from S3 to Bronze
         - task_key: "ingest_bronze"
-          description: "Load item properties from S3 using Autoloader"
-          # python_wheel_task:
-          #   package_name: lambda_arch.batch_layer
-          #   entry_point: bronze_ingest
-            
           notebook_task:
-            notebook_path: "/Workspace/src/batch_layer/bronze_layer/ingest_data"
-            parameters:
+            notebook_path: "/Workspace/Users/duybd@mz.co.kr/.bundle/lambda-architecture/dev/files/src/batch_layer/bronze_layer/ingest_data_batch"
+            base_parameters:
               - s3_bucket: "{{env.BATCH_S3_BUCKET}}"
-              - target_table: "default.item_properties_bronze"
-          job_cluster_key: "batch_cluster"
+              - target_table: "dev.bronze.batch_bronze"
+          environment_key: "default"
           timeout_seconds: 3600
 
         # Stage 2: Transform Silver
         - task_key: "transform_silver"
-          description: "Clean and deduplicate data in Silver layer"
-          # python_wheel_task:
-          #   package_name: lambda_arch.batch_layer
-          #   entry_point: silver_transform
-            
-          notebook_task:
-            notebook_path: "/Workspace/src/batch_layer/silver_layer/transform_properties_silver"
+          spark_python_task:
+            python_file: "/Workspace/Users/duybd@mz.co.kr/.bundle/lambda-architecture/dev/files/src/batch_layer/silver_layer/transform_properties_silver.py"
             parameters:
-              - source_table: "default.item_properties_bronze"
-              - target_table: "default.item_properties_silver"
-          job_cluster_key: "batch_cluster"
+              - "--source_table"
+              - "dev.bronze.batch_bronze"
+              - "--target_table"
+              - "dev.silver.batch_silver"
+          environment_key: "default"
           timeout_seconds: 3600
           depends_on:
             - task_key: "ingest_bronze"
 
         # Stage 3: Aggregate Gold
         - task_key: "aggregate_gold"
-          description: "Create analytics tables in Gold layer"
-          # python_wheel_task:
-          #   package_name: lambda_arch.batch_layer
-          #   entry_point: gold_aggregate
-            
-          notebook_task:
-            notebook_path: "/Workspace/src/batch_layer/gold_layer/aggregate_properties_gold"
+          spark_python_task:
+            python_file: "/Workspace/Users/duybd@mz.co.kr/.bundle/lambda-architecture/dev/files/src/batch_layer/gold_layer/aggregate_properties_gold.py"
             parameters:
-              - source_table: "default.item_properties_silver"
-              - summary_table: "default.item_properties_summary"
-              - stats_table: "default.property_statistics"
-          job_cluster_key: "batch_cluster"
+              - "--source_table"
+              - "dev.silver.batch_silver"
+              - "--summary_table"
+              - "dev.gold.item_properties_summary"
+              - "--stats_table"
+              - "dev.gold.property_statistics"
+          environment_key: "default"
           timeout_seconds: 3600
           depends_on:
             - task_key: "transform_silver"
@@ -67,3 +49,12 @@ resources:
       schedule:
         quartz_cron_expression: "0 0 2 * * ?"
         timezone_id: "UTC"
+
+      environments:
+      - environment_key: "default"
+        spec:
+          environment_version: '2'
+          dependencies:
+            - pandas>=2.0.0 
+            - numpy<2
+
