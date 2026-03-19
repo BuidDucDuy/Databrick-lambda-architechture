@@ -2,85 +2,25 @@ bundle:
   name: lambda-architecture
   version: "1.0"
 
+sync:
+  include:
+    - "src/**"
+    - "resources/**"
+    - "config/DAB/**"
+  exclude:
+    - "config/terraform/**"
+    - "lambda/**"
+    - "data/**"
+    - "scripts/**"
+    - ".terraform/**"
+    - "**/*.tf"
+
+include:
+  - config/DAB/jobs/batch.yml
+  - config/DAB/jobs/speed.yml
+
 environments:
   dev:
     workspace:
-      host: "{{env.DATABRICKS_HOST}}"
-      token: "{{env.DATABRICKS_TOKEN}}"
-    resources:
-      jobs:
-        batch_etl_job:
-          name: "batch-etl-job"
-        speed_etl_job:
-          name: "speed-etl-job"
-
-resources:
-  jobs:
-    batch_etl_job:
-      name: "Lambda Architecture - Batch ETL"
-      description: "Process item properties from S3"
-      tasks:
-        - task_key: "ingest_bronze"
-          python_wheel_task:
-            package_name: lambda_arch
-            entry_point: batch_ingest
-          job_cluster_key: "batch_cluster"
-        - task_key: "transform_silver"
-          python_wheel_task:
-            package_name: lambda_arch
-            entry_point: batch_transform
-          job_cluster_key: "batch_cluster"
-          depends_on:
-            - task_key: "ingest_bronze"
-        - task_key: "aggregate_gold"
-          python_wheel_task:
-            package_name: lambda_arch
-            entry_point: batch_aggregate
-          job_cluster_key: "batch_cluster"
-          depends_on:
-            - task_key: "transform_silver"
-
-    speed_etl_job:
-      name: "Lambda Architecture - Speed ETL"
-      description: "Process real-time events from Kinesis"
-      tasks:
-        - task_key: "ingest_bronze"
-          python_wheel_task:
-            package_name: lambda_arch
-            entry_point: speed_ingest
-          job_cluster_key: "speed_cluster"
-        - task_key: "transform_silver"
-          python_wheel_task:
-            package_name: lambda_arch
-            entry_point: speed_transform
-          job_cluster_key: "speed_cluster"
-          depends_on:
-            - task_key: "ingest_bronze"
-        - task_key: "aggregate_gold"
-          python_wheel_task:
-            package_name: lambda_arch
-            entry_point: speed_aggregate
-          job_cluster_key: "speed_cluster"
-          depends_on:
-            - task_key: "transform_silver"
-
-  clusters:
-    batch_cluster:
-      spark_version: "13.3.x-scala2.12"
-      node_type_id: "i3.xlarge"
-      num_workers: 2
-      aws_attributes:
-        availability: "SPOT"
-      tags:
-        env: "dev"
-        purpose: "batch-processing"
-
-    speed_cluster:
-      spark_version: "13.3.x-scala2.12"
-      node_type_id: "i3.xlarge"
-      num_workers: 2
-      aws_attributes:
-        availability: "SPOT"
-      tags:
-        env: "dev"
-        purpose: "streaming-processing"
+      host: "https://dbc-41b47063-da23.cloud.databricks.com"
+      token: "dapi0cf1e5ba3e5573cf56e895abd9152f5e"

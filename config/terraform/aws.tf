@@ -41,7 +41,8 @@ resource "aws_s3_bucket_versioning" "batch_data" {
 # S3 Bucket - Streaming Data (Events)
 resource "aws_s3_bucket" "streaming_data" {
   bucket = "databricks-streaming-data-demo"
-
+  force_destroy = true
+  
   tags = {
     Name        = "${var.project_name}-streaming"
     Environment = var.environment
@@ -126,7 +127,10 @@ resource "aws_iam_role_policy" "lambda_policy" {
     ]
   })
 }
-
+resource "aws_cloudwatch_log_group" "lambda_log" {
+  name              = "/aws/lambda/${aws_lambda_function.s3_processor.function_name}"
+  retention_in_days = 7 
+}
 
 # S3 Event Notification - Lambda Permission
 
@@ -156,8 +160,8 @@ resource "aws_lambda_function" "s3_processor" {
   role                = aws_iam_role.lambda_execution.arn
   handler             = "s3_streaming_processor.lambda_handler"
   runtime             = "python3.11"
-  timeout             = 60
-  memory_size         = 512
+  timeout             = 300
+  memory_size         = 1024
   source_code_hash    = data.archive_file.lambda_code.output_base64sha256
 
   environment {
@@ -184,6 +188,6 @@ resource "aws_s3_bucket_notification" "streaming_notification" {
   lambda_function {
     lambda_function_arn = aws_lambda_function.s3_processor.arn
     events              = ["s3:ObjectCreated:*"]
-    filter_prefix       = "data/"
+    
   }
 }
