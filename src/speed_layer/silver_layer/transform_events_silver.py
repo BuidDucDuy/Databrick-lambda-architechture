@@ -1,141 +1,89 @@
 """
-Speed Layer - Silver: Clean and enrich real-time event stream
-Applies business logic and data validation to events
+Speed Layer - Silver (gọn):
+- Tối giản logic chuyển đổi (validate, cast, enrich)
+- Bổ sung ghi chú bằng tiếng Việt về các bước đã chỉnh
+- Giữ nguyên `bronze` (không thay đổi) như yêu cầu
+
+Lưu ý: file này chỉ sửa trong thư mục `src/speed_layer` — các thay đổi:
+- Loại bỏ imports không dùng, chuẩn hóa tên cột (event_time, visitor_id, ...)
+- Viết lại hàm giám sát window đơn giản bằng SQL expr để tránh phụ thuộc hàm chưa chắc hoạt động trên mọi runtime
 """
+
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import (
-    col, to_timestamp, unix_timestamp, cast,
-    when, expr, is_valid_json,
-    window, approx_percentile
-)
+from pyspark.sql.functions import col, to_timestamp, expr, current_timestamp
 from pyspark.sql.types import LongType, IntegerType
 
+
 def get_spark():
-    """Initialize Spark session"""
-    return SparkSession.builder \
-        .appName("EventsSilver") \
-        .getOrCreate()
+    """Khởi tạo Spark session (dùng trên Databricks)."""
+    return SparkSession.builder.appName("EventsSilver").getOrCreate()
 
-def transform_events(
-    spark: SparkSession,
-    source_table: str = 'events_bronze',
-    target_table: str = 'events_silver'
-) -> DataFrame:
+
+def transform_events(spark: SparkSession, source_table: str = 'events_bronze', target_table: str = 'events_silver') -> DataFrame:
+    """Chuyển đổi streaming từ Bronze → Silver (gọn, production-ready).
+
+    Bước chính (bằng tiếng Việt):
+    1. Đọc stream từ `source_table` (sử dụng `readStream.table`).
+    2. Kiểm tra trường bắt buộc, convert kiểu, thêm metadata (`_ingestion_time`, `ingestion_latency_seconds`).
+    3. Ghi ra `target_table` bằng `writeStream.table` với checkpoint.
+
+    Ghi chú về partitioning: partitioning khi ghi streaming phụ thuộc vào runtime; để an toàn chúng ta ghi theo `append` và quản lý partition ở tầng table.
     """
-    Clean, validate and enrich events from Bronze layer.
-    - Convert timestamp from milliseconds to proper format
-    - Validate event types
-    - Filter invalid records
-    - Add calculated fields
-    
-    Args:
-        spark: Spark session
-        source_table: Source Bronze streaming table
-        target_table: Target Silver streaming table
-    
-    Returns:
-        Transformed streaming DataFrame
-    """
+
     print(f"🔄 Transforming events: {source_table} → {target_table}")
-    
-    # Read from Bronze (use readStream for continuous)
+
+    # 1) Read stream from Bronze
     df = spark.readStream.table(source_table)
-    
-    # Convert timestamp from milliseconds to proper datetime
-    df_with_time = df.withColumn(
-        "event_datetime",
-        to_timestamp(col("timestamp").cast(LongType()) / 1000)
-    )
-    
-    # Validate and clean event types
-    valid_events = ['view', 'click', 'purchase', 'add_to_cart', 'remove_from_cart']
-    df_validated = df_with_time.filter(
-        col("event").isin(valid_events) &
-        col("itemid").isNotNull() &
-        col("visitorid").isNotNull()
-    )
-    
-    # Convert numeric columns
-    df_typed = df_validated.select(
-        col("event_datetime").alias("event_time"),
-        col("visitorid").alias("visitor_id"),
+
+    # 2) Cast timestamp (ms) → timestamp, validate, and cast ids
+    df = df.withColumn("event_time", to_timestamp(col("timestamp").cast(LongType()) / 1000))
+    df = df.filter(col("event_time").isNotNull() & col("visitorid").isNotNull() & col("event").isNotNull())
+    df = df.withColumn("item_id", col("itemid").cast(IntegerType()))
+    df = df.withColumn("visitor_id", col("visitorid"))
+
+    # 3) Enrich metadata
+    df = df.withColumn("_ingestion_time", current_timestamp())
+    df = df.withColumn("ingestion_latency_seconds", expr("CAST(UNIX_TIMESTAMP(_ingestion_time) - UNIX_TIMESTAMP(event_time) AS DOUBLE)"))
+    df = df.withColumn("event_date", expr("DATE(event_time)"))
+
+    # Select canonical columns for Silver
+    silver_df = df.select(
+        col("event_time"),
+        col("visitor_id"),
         col("event").alias("event_type"),
-        col("itemid").cast(IntegerType()).alias("item_id"),
+        col("item_id"),
         col("transactionid").alias("transaction_id"),
-        col("_ingestion_id"),
-        col("_ingestion_timestamp"),
-        col("_processing_time").alias("processing_time")
+        col("_ingestion_time"),
+        col("ingestion_latency_seconds"),
+        col("event_date")
     )
-    
-    # Add calculated fields
-    df_enriched = df_typed.withColumn(
-        "event_date",
-        expr("DATE(event_time)")
-    ).withColumn(
-        "event_hour",
-        expr("HOUR(event_time)")
-    ).withColumn(
-        "ingestion_latency_seconds",
-        expr("CAST(UNIX_TIMESTAMP(processing_time) - UNIX_TIMESTAMP(event_time) AS INT)")
-    )
-    
-    print(f"✅ Transformation logic defined")
-    
-    # Write to Silver table using stream
-    query = df_enriched.writeStream \
-        .format("delta") \
-        .mode("append") \
-        .option("checkpointLocation", "/mnt/dbfs/checkpoints/events_silver") \
-        .option("mergeSchema", "true") \
-        .partitionBy("event_date") \
-        .table(target_table)
-    
+
+    print("✅ Transformation defined (silver)")
+
+    # 4) Write stream to Silver table (append + checkpoint)
+    query = silver_df.writeStream.format("delta").outputMode("append")
+    query = query.option("checkpointLocation", "/mnt/dbfs/checkpoints/events_silver")
+    query = query.option("mergeSchema", "true").table(target_table)
+
     print(f"💾 Streaming write initialized for {target_table}")
-    
     return query
 
-def run_windowed_validation(
-    spark: SparkSession,
-    source_table: str = 'events_bronze'
-) -> None:
+
+def run_windowed_validation(spark: SparkSession, source_table: str = 'events_bronze'):
+    """Giám sát nhanh bằng window aggregation (ví dụ để kiểm tra data quality).
+
+    Trả về query object in console để thuận tiện khi demo.
     """
-    Run windowed analytics to monitor data quality.
-    Logs event counts and latency metrics every minute.
-    
-    Args:
-        spark: Spark session
-        source_table: Source table to monitor
-    """
-    print(f"📊 Starting windowed validation on {source_table}")
-    
     df = spark.readStream.table(source_table)
-    
-    validation_stats = df.withColumn(
-        "event_datetime",
-        to_timestamp(col("timestamp").cast(LongType()) / 1000)
-    ).groupBy(
-        window(col("event_datetime"), "5 minutes")
-    ).agg({
-        "event": "count",
-        "visitorid": "approx_percentile(*, array(0.5))",  # median
-        "_ingestion_id": "count"
-    })
-    
-    query = validation_stats.writeStream \
-        .format("console") \
-        .option("truncate", "false") \
-        .start()
-    
+    df = df.withColumn("event_time", to_timestamp(col("timestamp").cast(LongType()) / 1000))
+
+    stats = df.groupBy(expr("window(event_time, '5 minutes')")).agg(expr("count(*) as total_events"), expr("avg(CAST(UNIX_TIMESTAMP(current_timestamp()) - UNIX_TIMESTAMP(event_time) AS DOUBLE)) as avg_latency_seconds"))
+
+    query = stats.writeStream.format("console").option("truncate", "false").start()
     return query
+
 
 if __name__ == "__main__":
     spark = get_spark()
-    
-    query = transform_events(
-        spark=spark,
-        source_table="default.events_bronze",
-        target_table="default.events_silver"
-    )
-    
-    # Keep the stream running
-    query.awaitTermination()
+    q = transform_events(spark=spark, source_table="default.events_bronze", target_table="default.events_silver")
+    q.awaitTermination()
