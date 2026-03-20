@@ -50,7 +50,7 @@ def transform_properties(
         col("timestamp"),
         col("date"),
         col("_ingestion_time").alias("ingestion_timestamp"),
-        col("source_file").alias("source_file")
+        col("_source_file").alias("source_file")
     )
     
     print(f" complete")
