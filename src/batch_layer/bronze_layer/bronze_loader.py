@@ -3,7 +3,7 @@ Batch Layer - Bronze Loader
 Production job for ingesting raw data into Bronze table via Auto Loader.
 
 Usage:
-  python bronze_loader.py --source-path s3://bucket/raw --table dev.bronze.batch_item_properties
+  python bronze_loader.py --source-path s3://bucket/raw --table dev.bronze_batch.batch_item_properties
   
   Or directly in Databricks Jobs with fixed config.
 """
@@ -90,8 +90,8 @@ def main():
     
     # Configuration (override via job parameters)
     source_path = "s3://databricks-batch-data-demo/raw/"
-    checkpoint_path = "/Volumes/dev/bronze/checkpoint/_checkpoints/batch_ingestion/"
-    target_table = "dev.bronze.batch_item_properties"
+    checkpoint_path = "/Volumes/dev/bronze_batch/checkpoint/_checkpoints/batch_ingestion/"
+    target_table = "dev.bronze_batch.batch_item_properties"
     
     try:
         count = ingest_bronze(spark, source_path, checkpoint_path, target_table)

@@ -93,8 +93,8 @@ def main():
     """Main entry point."""
     spark = SparkSession.builder.getOrCreate()
     
-    source_table = "dev.bronze.batch_item_properties"
-    target_table = "dev.silver.batch_silver"
+    source_table = "dev.bronze_batch.batch_item_properties"
+    target_table = "dev.silver_batch.batch_silver"
     
     try:
         count = transform_silver(spark, source_table, target_table)

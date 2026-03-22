@@ -23,5 +23,5 @@ include:
 environments:
   dev:
     workspace:
-      host: "https://dbc-41b47063-da23.cloud.databricks.com"
-      token: "dapi0cf1e5ba3e5573cf56e895abd9152f5e"
+      host: "https://dbc-e58a0f49-fb51.cloud.databricks.com/"
+      token: "dapib278b12cd0147e7304eedc798c04fd06"

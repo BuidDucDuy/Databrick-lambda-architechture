@@ -18,13 +18,24 @@ event_schema = StructType([
     StructField("_ingestion_timestamp", StringType(), True),
 ])
 
+
+KINESIS_STREAM_NAME = "databrick-lambda-architecture-events"   
+KINESIS_REGION       = "us-east-1"            
+STARTING_POSITION    = "earliest"                     
+TARGET_TABLE       = "dev.bronze_stream.bronze_streaming_item_properties" 
+CHECKPOINT_LOCATION = "/Volumes/dev/bronze_stream/checkpoint/_checkpoints/bronze_streaming_ingestion/"  
+awsAccessKey = "AKIATOZJ4IAR5QSFVP6X"
+awsSecretKey = "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"
+
 # Đọc dữ liệu từ Kinesis
 df_kinesis = (
     spark.readStream
          .format("kinesis")
-         .option("streamName", "<YOUR_STREAM_NAME>")    # tên Kinesis stream
-         .option("region", "<AWS_REGION>")              # region
-         .option("initialPosition", "latest")           # vị trí bắt đầu đọc
+         .option("streamName", KINESIS_STREAM_NAME)    
+         .option("region", KINESIS_REGION)             
+         .option("initialPosition", STARTING_POSITION) 
+         .option("awsAccessKey", awsAccessKey)
+         .option("awsSecretKey", awsSecretKey)
          .load()
 )
 
@@ -48,9 +59,10 @@ query = (
     df_enriched.writeStream
                .format("delta")
                .outputMode("append")
-               .option("checkpointLocation", "<CHECKPOINT_LOCATION>")
+               .option("checkpointLocation", CHECKPOINT_LOCATION)
                .option("mergeSchema", "true")
-               .table("<TARGET_TABLE>")
+               .trigger(availableNow=True)
+               .toTable(TARGET_TABLE)
 )
 
 query.awaitTermination()

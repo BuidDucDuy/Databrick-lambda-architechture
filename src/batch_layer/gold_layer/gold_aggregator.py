@@ -33,8 +33,8 @@ def create_gold_tables(spark, source_table):
     """
     logger.info(f"Starting Gold aggregation from {source_table}")
     
-    gold_table_1 = "dev.gold.item_properties_summary"
-    gold_table_2 = "dev.gold.property_statistics"
+    gold_table_1 = "dev.gold_batch.batch_item_properties_summary"
+    gold_table_2 = "dev.gold_batch.batch_property_statistics"
     
     # Gold 1: Item-Property Summary
     logger.info(f"Creating {gold_table_1}")
@@ -86,8 +86,8 @@ def create_gold_tables(spark, source_table):
 def validate_gold(spark):
     """Validate Gold tables exist and have data."""
     tables = [
-        "dev.gold.item_properties_summary",
-        "dev.gold.property_statistics"
+        "dev.gold_batch.batch_item_properties_summary",
+        "dev.gold_batch.batch_property_statistics"
     ]
     
     for table in tables:
@@ -102,7 +102,7 @@ def main():
     """Main entry point."""
     spark = SparkSession.builder.getOrCreate()
     
-    source_table = "dev.silver.batch_silver"
+    source_table = "dev.silver_batch.batch_silver"
     
     try:
         item_count, prop_count = create_gold_tables(spark, source_table)
