@@ -1,43 +1,43 @@
 # # .gitignore - Databricks Demo
 
-# # Python
-# __pycache__/
-# *.py[cod]
-# *$py.class
-# *.so
-# .Python
-# build/
-# develop-eggs/
-# dist/
-# downloads/
-# eggs/
-# .eggs/
-# lib/
-# lib64/
-# parts/
-# sdist/
-# var/
-# wheels/
-# *.egg-info/
-# .installed.cfg
-# *.egg
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# # Virtual environments
-# venv/
-# env/
-# ENV/
+# Virtual environments
+venv/
+env/
+ENV/
 
 # # Jupyter Notebook
 # # .ipynb_checkpoints/
 # # .ipynb
 
-# # IDE
-# .vscode/
-# .idea/
-# *.swp
-# *.swo
-# *.swn
-# .DS_Store
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+.DS_Store
 
 # # Terraform
 # .terraform/
@@ -52,15 +52,15 @@
 # .aws/credentials
 # .aws/config
 
-# # Databricks
-# .databricks-sync
-# .tmp/
-# .env
-# .env.local
+# Databricks
+.databricks-sync
+.tmp/
+.env
+.env.local
 
-# # Logs
-# *.log
-# logs/
+# Logs
+*.log
+logs/
 
 # # Data (if checking in small files)
 data/
